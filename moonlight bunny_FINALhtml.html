@@ -1,0 +1,676 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Conejito Lunar</title>
+<!-- Tone.js for music and sound effects -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+<style>
+  body, html {
+    margin: 0; padding: 0; overflow: hidden;
+    background: linear-gradient(to top, #0b1d2b, #1a3a57);
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    color: #fff;
+  }
+  canvas {
+    display: block;
+    background: transparent;
+  }
+  #ui {
+    position: absolute;
+    top: 10px; left: 50%;
+    transform: translateX(-50%);
+    text-align: center;
+    font-size: 22px;
+    font-weight: 700;
+    text-shadow: 0 0 6px #88f;
+    user-select: none;
+  }
+  #ui .score-level {
+    margin: 0 15px;
+  }
+  #retry {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    padding: 14px 28px;
+    font-size: 24px;
+    background: #4466ff;
+    border: none;
+    border-radius: 20px;
+    color: #eef;
+    cursor: pointer;
+    box-shadow: 0 0 15px #6699ff;
+    display: none;
+    user-select: none;
+  }
+  #pause-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0, 0, 0, 0.5);
+    display: none;
+    justify-content: center;
+    align-items: center;
+    font-size: 48px;
+    font-weight: bold;
+    text-shadow: 2px 2px 5px rgba(0,0,0,0.5);
+    color: white;
+  }
+</style>
+</head>
+<body>
+<div id="ui">
+  <span class="score-level">Puntuación: <span id="score">0</span></span> | <span class="score-level">Nivel: <span id="level-display">1</span></span> | <span class="score-level">Récord: <span id="highscore">0</span></span>
+</div>
+<button id="retry">Ups! Casi! ¿Volvemos a probar?</button>
+<div id="pause-overlay">PAUSED</div>
+<canvas id="game"></canvas>
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  let W, H;
+  function resize() {
+    W = window.innerWidth;
+    H = window.innerHeight;
+    canvas.width = W;
+    canvas.height = H;
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const gravity = 0.7;
+  const jumpPower = -15;
+
+  const uiScore = document.getElementById('score');
+  const uiHigh = document.getElementById('highscore');
+  const uiLevel = document.getElementById('level-display');
+  const retryBtn = document.getElementById('retry');
+  const pauseOverlay = document.getElementById('pause-overlay');
+
+  let score = 0;
+  let highScore = localStorage.getItem('moonlight_bunny_high') || 0;
+  uiHigh.textContent = highScore;
+  let gameSpeed = 5;
+  let isPaused = false;
+  let level = 1;
+  const LEVEL_UP_SCORE = 10;
+
+  // Music variables and setup
+  const synth = new Tone.Synth({
+    oscillator: { type: "triangle" },
+    envelope: {
+      attack: 0.005,
+      decay: 0.1,
+      sustain: 0.3,
+      release: 1
+    }
+  }).toDestination();
+  let musicStarted = false;
+  // A happier, more video gamey melody in C Major
+  const notes = ["C4", "E4", "G4", "C5", "G4", "E4", "C4", "A4", "F4", "D4", "F4", "A4", "G4"];
+  let noteIndex = 0;
+  const musicLoop = new Tone.Loop(time => {
+    synth.triggerAttackRelease(notes[noteIndex % notes.length], "8n", time);
+    noteIndex++;
+  }, "4n");
+
+  // Sound effects setup
+  const sfxSynth = new Tone.Synth({
+    oscillator: { type: "sine" },
+    envelope: {
+      attack: 0.01,
+      decay: 0.2,
+      sustain: 0,
+      release: 0.2
+    }
+  }).toDestination();
+  const carrotSfxSynth = new Tone.Synth({
+    oscillator: { type: "square" },
+    envelope: {
+      attack: 0.01,
+      decay: 0.1,
+      sustain: 0,
+      release: 0.1
+    }
+  }).toDestination();
+
+  function playJumpSound() {
+    sfxSynth.triggerAttackRelease("G4", "8n");
+  }
+
+  function playCarrotSound() {
+    carrotSfxSynth.triggerAttackRelease("C5", "16n");
+  }
+
+  function startMusic() {
+    if (!musicStarted) {
+      Tone.start();
+      musicLoop.start(0);
+      Tone.Transport.start();
+      musicStarted = true;
+    }
+  }
+  
+  function pauseMusic() {
+    if (musicStarted) {
+      Tone.Transport.pause();
+    }
+  }
+
+  function resumeMusic() {
+    if (musicStarted) {
+      Tone.Transport.start();
+    }
+  }
+
+
+  // Background stars and fireflies layers for parallax
+  class Star {
+    constructor() {
+      this.x = Math.random()*W;
+      this.y = Math.random()*H*0.7;
+      this.size = Math.random()*1.2 + 0.3;
+      this.speed = this.size*0.15;
+      this.alpha = Math.random()*0.7+0.3;
+    }
+    update() {
+      this.x -= this.speed;
+      if (this.x < 0) this.x = W;
+    }
+    draw() {
+      ctx.beginPath();
+      ctx.fillStyle = `rgba(255,255,255,${this.alpha})`;
+      ctx.shadowColor = '#88bbff';
+      ctx.shadowBlur = 6;
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      ctx.fill();
+      ctx.shadowBlur = 0;
+    }
+  }
+  class Firefly {
+    constructor() {
+      this.x = Math.random()*W;
+      this.y = H - 150 - Math.random()*100;
+      this.size = Math.random()*8 + 4;
+      this.speed = 2 + Math.random()*1.5;
+      this.alpha = 0;
+      this.phase = Math.random()*Math.PI*2;
+    }
+    update() {
+      this.x -= this.speed;
+      if (this.x < -this.size) this.x = W + this.size;
+      this.phase += 0.1;
+      this.alpha = 0.6 + 0.4 * Math.sin(this.phase);
+    }
+    draw() {
+      const grad = ctx.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size);
+      grad.addColorStop(0, `rgba(255, 255, 200, ${this.alpha})`);
+      grad.addColorStop(1, 'rgba(255, 255, 200, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(this.x, this.y, this.size, 0, Math.PI*2);
+      ctx.fill();
+    }
+  }
+  
+  // Grass elements for the foreground
+  class Grass {
+    constructor(x, y) {
+      this.x = x;
+      this.y = y;
+      this.speed = gameSpeed;
+      this.height = Math.random() * 20 + 10;
+      this.color = `#3b694b`; // Darker green
+    }
+    update() {
+      this.x -= gameSpeed;
+      if(this.x < -10) {
+        this.x = W + 10;
+      }
+    }
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(5, -this.height);
+      ctx.lineTo(10, 0);
+      ctx.fillStyle = this.color;
+      ctx.fill();
+      ctx.restore();
+    }
+  }
+
+  let rabbit;
+  const stars = [];
+  const fireflies = [];
+  const grass = [];
+  
+  function initializeGameElements() {
+    stars.length = 0;
+    fireflies.length = 0;
+    grass.length = 0;
+    for(let i=0;i<100;i++) stars.push(new Star());
+    for(let i=0;i<15;i++) fireflies.push(new Firefly());
+    for(let i=0;i<W/20;i++) grass.push(new Grass(i*20, H - 70));
+
+    // Rabbit
+    rabbit = {
+      x: 150,
+      y: H - 150,
+      width: 80,
+      height: 80,
+      vy: 0,
+      jumping: false,
+      tailGlowPhase: 0,
+      update() {
+        this.y += this.vy;
+        this.vy += gravity;
+        if(this.y > H - 150) {
+          this.y = H - 150;
+          this.vy = 0;
+          this.jumping = false;
+        }
+        this.tailGlowPhase += 0.05;
+      },
+      draw() {
+        // body
+        ctx.save();
+        ctx.translate(this.x, this.y);
+        // shadow softly below
+        ctx.shadowColor = 'rgba(0,0,0,0.2)';
+        ctx.shadowBlur = 10;
+        ctx.fillStyle = '#dcd0c0';
+        ctx.beginPath();
+        ctx.ellipse(40, 60, 35, 40, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // tail glow
+        const glowAlpha = 0.5 + 0.5 * Math.sin(this.tailGlowPhase);
+        const tailGradient = ctx.createRadialGradient(0, 55, 10, 0, 55, 35);
+        tailGradient.addColorStop(0, `rgba(255, 255, 150, ${glowAlpha})`);
+        tailGradient.addColorStop(1, 'rgba(255, 255, 150, 0)');
+        ctx.fillStyle = tailGradient;
+        ctx.beginPath();
+        ctx.ellipse(10, 55, 15, 25, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // body light base
+        ctx.fillStyle = '#fff9f0';
+        ctx.beginPath();
+        ctx.ellipse(40, 50, 30, 40, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // ears
+        ctx.fillStyle = '#f5e6d0';
+        ctx.beginPath();
+        ctx.ellipse(20, 0, 15, 40, 0, 0, Math.PI*2);
+        ctx.fill();
+        ctx.beginPath();
+        ctx.ellipse(60, 0, 15, 40, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // eyes
+        ctx.fillStyle = '#3b2e2e';
+        ctx.beginPath();
+        ctx.ellipse(25, 30, 7, 12, 0, 0, Math.PI*2);
+        ctx.ellipse(55, 30, 7, 12, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // pupils
+        ctx.fillStyle = '#1a0e0e';
+        ctx.beginPath();
+        ctx.ellipse(25, 32, 3, 6, 0, 0, Math.PI*2);
+        ctx.ellipse(55, 32, 3, 6, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        // nose
+        ctx.fillStyle = '#f19f9f';
+        ctx.beginPath();
+        ctx.ellipse(40, 45, 6, 4, 0, 0, Math.PI*2);
+        ctx.fill();
+
+        ctx.restore();
+      }
+    };
+  }
+
+  initializeGameElements();
+
+  // Obstacles - firefly lanterns
+  class Lantern {
+    constructor() {
+      this.width = 50;
+      this.height = 70;
+      this.x = W + this.width;
+      this.y = H - 70 - this.height;
+      this.speed = gameSpeed;
+      this.phase = Math.random()*Math.PI*2;
+      this.isLunarPlant = false; // Flag to differentiate from lunar plant
+    }
+    update() {
+      this.x -= gameSpeed;
+      this.phase += 0.05;
+    }
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      const glowAlpha = 0.6 + 0.4 * Math.sin(this.phase);
+      const grad = ctx.createRadialGradient(25, 35, 10, 25, 35, 35);
+      grad.addColorStop(0, `rgba(255, 255, 180, ${glowAlpha})`);
+      grad.addColorStop(1, 'rgba(255, 255, 180, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.ellipse(25, 35, 25, 35, 0, 0, Math.PI*2);
+      ctx.fill();
+
+      ctx.fillStyle = '#f9f4d7';
+      ctx.strokeStyle = '#c9c396';
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(25, 35, 20, 30, 0, 0, Math.PI*2);
+      ctx.fill();
+      ctx.stroke();
+
+      ctx.fillStyle = '#e2d89e';
+      ctx.beginPath();
+      ctx.moveTo(5, 10);
+      ctx.lineTo(45, 10);
+      ctx.lineTo(40, 0);
+      ctx.lineTo(10, 0);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+      ctx.restore();
+    }
+  }
+
+  // Lunar Plant obstacle
+  class LunarPlant {
+    constructor() {
+      this.width = 60;
+      this.height = 100;
+      this.x = W + this.width;
+      this.y = H - 70 - this.height;
+      this.speed = gameSpeed;
+      this.isLunarPlant = true;
+    }
+    update() {
+      this.x -= gameSpeed;
+    }
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+      // Main stalk
+      ctx.fillStyle = '#6e9e80';
+      ctx.beginPath();
+      ctx.moveTo(25, 100);
+      ctx.quadraticCurveTo(30, 50, 25, 0);
+      ctx.quadraticCurveTo(20, 50, 25, 100);
+      ctx.fill();
+      // Spikes
+      ctx.fillStyle = '#c9c396';
+      ctx.beginPath();
+      ctx.moveTo(25, 20); ctx.lineTo(10, 30); ctx.lineTo(25, 40);
+      ctx.moveTo(25, 60); ctx.lineTo(10, 70); ctx.lineTo(25, 80);
+      ctx.moveTo(25, 20); ctx.lineTo(40, 30); ctx.lineTo(25, 40);
+      ctx.moveTo(25, 60); ctx.lineTo(40, 70); ctx.lineTo(25, 80);
+      ctx.fill();
+
+      // Glowing effect
+      const glow = ctx.createRadialGradient(25, 50, 10, 25, 50, 60);
+      glow.addColorStop(0, 'rgba(100, 255, 150, 0.2)');
+      glow.addColorStop(1, 'rgba(100, 255, 150, 0)');
+      ctx.fillStyle = glow;
+      ctx.beginPath();
+      ctx.arc(25, 50, 60, 0, Math.PI * 2);
+      ctx.fill();
+      
+      ctx.restore();
+    }
+  }
+
+  // Carrots (Power-ups)
+  class Carrot {
+    constructor() {
+      this.width = 30;
+      this.height = 60;
+      this.x = W + this.width;
+      // Carrots float a little above the ground
+      this.y = H - 140;
+      this.speed = gameSpeed;
+      this.glowPhase = Math.random() * Math.PI * 2;
+    }
+    update() {
+      this.x -= gameSpeed;
+      this.glowPhase += 0.1;
+    }
+    draw() {
+      ctx.save();
+      ctx.translate(this.x, this.y);
+
+      // glowing effect
+      const glowAlpha = 0.7 + 0.3 * Math.sin(this.glowPhase);
+      const grad = ctx.createRadialGradient(15, 30, 5, 15, 30, 25);
+      grad.addColorStop(0, `rgba(255, 165, 0, ${glowAlpha})`);
+      grad.addColorStop(1, 'rgba(255, 165, 0, 0)');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(15, 30, 20, 0, Math.PI * 2);
+      ctx.fill();
+      
+      // carrot body
+      ctx.fillStyle = '#ff8c00';
+      ctx.beginPath();
+      ctx.moveTo(15, 60);
+      ctx.lineTo(0, 20);
+      ctx.lineTo(30, 20);
+      ctx.closePath();
+      ctx.fill();
+
+      // carrot leaves
+      ctx.fillStyle = '#228b22';
+      ctx.beginPath();
+      ctx.moveTo(15, 20);
+      ctx.lineTo(10, 0);
+      ctx.lineTo(20, 0);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.restore();
+    }
+  }
+
+  let obstacles = [];
+  let carrots = [];
+  let frameCount = 0;
+
+  let gameRunning = true;
+
+  function checkCollision(a, b) {
+    return (
+      a.x < b.x + b.width &&
+      a.x + a.width > b.x &&
+      a.y < b.y + b.height &&
+      a.y + a.height > b.y
+    );
+  }
+
+  function gameLoop() {
+    if(isPaused) {
+      requestAnimationFrame(gameLoop);
+      return;
+    }
+
+    ctx.clearRect(0, 0, W, H);
+
+    // Background gradient (night meadow)
+    const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+    bgGrad.addColorStop(0, '#0b1d2b');
+    bgGrad.addColorStop(1, '#1a3a57');
+    ctx.fillStyle = bgGrad;
+    ctx.fillRect(0, 0, W, H);
+
+    // Draw stars and fireflies parallax
+    stars.forEach(s => { s.update(); s.draw(); });
+    fireflies.forEach(f => { f.update(); f.draw(); });
+
+    // Ground
+    ctx.fillStyle = '#1f3a48';
+    ctx.fillRect(0, H - 70, W, 70);
+    
+    // Draw and update grass
+    grass.forEach(g => { g.update(); g.draw(); });
+
+
+    // Update & draw rabbit
+    rabbit.update();
+    rabbit.draw();
+
+    // Spawn obstacles and carrots
+    frameCount++;
+    if(frameCount % 120 === 0) {
+      if(level === 1) {
+        obstacles.push(new Lantern());
+      } else if (level === 2) {
+        if (Math.random() > 0.5) {
+            obstacles.push(new Lantern());
+        } else {
+            obstacles.push(new LunarPlant());
+        }
+      } else { // Level 3 and up
+        const obstacleType = Math.random();
+        if (obstacleType < 0.4) {
+            obstacles.push(new Lantern());
+        } else {
+            obstacles.push(new LunarPlant());
+        }
+      }
+    }
+    // Spawn carrots less frequently
+    if(frameCount % 300 === 0) {
+      carrots.push(new Carrot());
+    }
+
+    // Update & draw obstacles
+    for(let i=obstacles.length-1; i>=0; i--) {
+      const o = obstacles[i];
+      o.speed = gameSpeed;
+      o.update();
+      o.draw();
+
+      // Collision check
+      if(checkCollision(rabbit, o)) {
+        gameRunning = false;
+        retryBtn.style.display = 'block';
+        pauseMusic();
+        if(score > highScore) {
+          highScore = score;
+          localStorage.setItem('moonlight_bunny_high', highScore);
+          uiHigh.textContent = highScore;
+        }
+      }
+
+      // Remove off screen
+      if(o.x + o.width < 0) {
+        obstacles.splice(i, 1);
+        if(gameRunning) {
+          score++;
+          uiScore.textContent = score;
+
+          // Check for level up
+          if (score > 0 && score % LEVEL_UP_SCORE === 0) {
+            level++;
+            gameSpeed += 1.5; // Increase speed
+            uiLevel.textContent = level; // Update level display
+          }
+        }
+      }
+    }
+    
+    // Update & draw carrots
+    for(let i = carrots.length - 1; i >= 0; i--) {
+      const c = carrots[i];
+      c.speed = gameSpeed;
+      c.update();
+      c.draw();
+
+      // Check for carrot collection
+      if (checkCollision(rabbit, c)) {
+        carrots.splice(i, 1);
+        score += 5; // Carrots are worth more points!
+        uiScore.textContent = score;
+        playCarrotSound();
+      }
+
+      // Remove off screen
+      if (c.x + c.width < 0) {
+        carrots.splice(i, 1);
+      }
+    }
+
+    if(gameRunning) {
+      requestAnimationFrame(gameLoop);
+    }
+  }
+
+  // Controls
+  window.addEventListener('keydown', e => {
+    if(e.code === 'Space' && gameRunning && !isPaused) {
+      if(!rabbit.jumping) {
+        rabbit.vy = jumpPower;
+        rabbit.jumping = true;
+        playJumpSound();
+      }
+    }
+    // Toggle pause with the 'P' key
+    if(e.code === 'KeyP' && gameRunning) {
+      isPaused = !isPaused;
+      if (isPaused) {
+        pauseMusic();
+        pauseOverlay.style.display = 'flex';
+      } else {
+        resumeMusic();
+        pauseOverlay.style.display = 'none';
+      }
+    }
+  });
+  window.addEventListener('click', () => {
+    if(gameRunning && !rabbit.jumping && !isPaused) {
+      rabbit.vy = jumpPower;
+      rabbit.jumping = true;
+      playJumpSound();
+    }
+  });
+
+  retryBtn.onclick = () => {
+    obstacles = [];
+    carrots = [];
+    score = 0;
+    gameSpeed = 5;
+    level = 1;
+    gameRunning = true;
+    rabbit.y = H - 150;
+    rabbit.vy = 0;
+    rabbit.jumping = false;
+    retryBtn.style.display = 'none';
+    uiScore.textContent = 0;
+    uiLevel.textContent = 1; // Reset level display
+    initializeGameElements();
+    resumeMusic();
+    gameLoop();
+  };
+  
+  // Start the game loop on window load
+  window.onload = function() {
+    gameLoop();
+  }
+})();
+</script>
+</body>
+</html>
